@@ -1,8 +1,43 @@
 import os
+from functions.get_file_content import get_file_content
+from functions.get_files_info import get_files_info
+from functions.run_python_files import run_python_files
+from functions.write_file import write_file
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from collections.abc import Callable
 import argparse
+
+def call_function(function_call: types.FunctionCall, verbose: bool = False) -> types.Content:
+
+    function_name = function_call.name or ""
+
+    function_map: dict[str, Callable[..., str]] = {
+        "get_file_content": get_file_content,
+        "get_files_info": get_files_info,
+        "run_python_files": run_python_files,
+        "write_file": write_file
+    }
+
+    if function_name not in function_map:
+        return types.Content(role="tool", parts=[types.Part.from_function_response(name=function_name,response={"error": f"Unknown function: {function_name}"},)],)
+
+    args = dict(function_call.args) if function_call.args else {}
+
+    args["working_directory"] = "./calculator"
+
+    function_result = function_map[function_name](**args)
+
+    return types.Content(
+        role="tool",
+        parts=[
+            types.Part.from_function_response(
+                name=function_name,
+                response={"result": function_result},
+            )
+        ],
+    )
 
 system_prompt = """
 You are a helpful AI coding agent.
@@ -53,7 +88,7 @@ schema_get_file_content = types.FunctionDeclaration(
 )
  
 schema_run_python_file = types.FunctionDeclaration(
-    name="run_python_file",
+    name="run_python_files",
     description="Executes a Python file relative to the working directory and returns its output",
     parameters=types.Schema(
         type=types.Type.OBJECT,
@@ -123,8 +158,22 @@ if args.verbose:
     print(f"Prompt tokens: {response.usage_metadata.prompt_token_count}")
     print(f"Response tokens: {response.usage_metadata.candidates_token_count}")
 
-if len(response.function_calls) != 0:
-    for call in response.function_calls:
-        print(f"Calling function: {call.name}({call.args})")
+function_results = []
+if response.function_calls:
+    for function_call in response.function_calls:
+
+        function_call_result = call_function(function_call, verbose=args.verbose)
+
+        if not function_call_result.parts:
+            raise ValueError("Function call returned no parts")
+        if function_call_result.parts[0].function_response is None:
+            raise ValueError("Function call returned no function_response")
+        if function_call_result.parts[0].function_response.response is None:
+            raise ValueError("Function call returned no response data")
+
+        function_results.append(function_call_result.parts[0])
+
+        if args.verbose:
+            print(f"-> {function_call_result.parts[0].function_response.response}")
 
 print(f"Response: {response.text}")
